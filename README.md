@@ -1,6 +1,6 @@
 ---
 title: "Lung Cancer Survival Dashboard"
-output: github_document
+output: DashboardTest1
 ---
 
 # Lung Cancer Survival Dashboard
