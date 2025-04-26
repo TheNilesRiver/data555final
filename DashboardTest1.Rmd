@@ -1,0 +1,155 @@
+---
+title: "Lung Cancer Survival Dashboard"
+author: "Neil Gutlay"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(dplyr)
+library(DT)
+library(plotly)
+library(broom)
+```
+
+```{r data, include=FALSE}
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("VectraPolarisData")
+
+library(VectraPolarisData)
+spe_lung <- HumanLungCancerV3()
+
+assays_slot <- assays(spe_lung)
+intensities_df <- assays_slot$intensities
+rownames(intensities_df) <- paste0("total_", rownames(intensities_df))
+nucleus_intensities_df <- assays_slot$nucleus_intensities
+rownames(nucleus_intensities_df) <- paste0("nucleus_", rownames(nucleus_intensities_df))
+membrane_intensities_df <- assays_slot$membrane_intensities
+rownames(membrane_intensities_df) <- paste0("membrane_", rownames(membrane_intensities_df))
+
+colData_df <- colData(spe_lung)
+spatialCoords_df <- spatialCoords(spe_lung)
+patient_level_df <- metadata(spe_lung)$clinical_data
+
+cell_level_df <- as.data.frame(cbind(colData_df, 
+                                     spatialCoords_df,
+                                     t(intensities_df),
+                                     t(nucleus_intensities_df),
+                                     t(membrane_intensities_df)))
+
+lung_df <- full_join(patient_level_df, cell_level_df, by = "slide_id")
+
+lung_df_2 <- lung_df %>%
+  select(slide_id, gender, mhcII_status, age_at_diagnosis,
+         stage_at_diagnosis, stage_numeric, pack_years, survival_days,
+         survival_status, cause_of_death, adjuvant_therapy,
+         time_to_recurrence_days, recurrence_or_lung_ca_death)
+
+data <- lung_df_2 %>% distinct()
+```
+
+Survival Analysis {.tabset}
+===========================================================
+
+Column {data-width=650}
+--------------------------------
+
+### Kaplan-Meier Survival Curves
+
+```{r km_plot}
+library(survival)
+library(broom)
+library(ggplot2)
+library(plotly)
+library(dplyr)
+
+# Step 1: Filter out missing data
+km_data <- data %>%
+  filter(!is.na(survival_days),
+         !is.na(survival_status),
+         !is.na(mhcII_status))
+
+# Step 2: Fit survival model
+fit <- survfit(Surv(survival_days, survival_status) ~ mhcII_status, data = km_data)
+
+# Step 3: Tidy and clean up strata names
+tidy_km <- broom::tidy(fit) %>%
+  mutate(strata = gsub("mhcII_status=", "", strata))
+
+# Step 4: Plot survival curves
+km_plot <- ggplot(tidy_km, aes(x = time, y = estimate, color = strata,
+                               group = strata,
+                               text = paste0("Time: ", time,
+                                             "<br>Survival Prob: ", round(estimate, 3),
+                                             "<br>Events: ", n.event,
+                                             "<br>At Risk: ", n.risk))) +
+  geom_step(size = 1.2) +
+  labs(title = "Kaplan-Meier Survival Curves by MHC-II Status",
+       x = "Time (Days)",
+       y = "Survival Probability",
+       color = "MHC-II Status") +
+  theme_minimal()
+
+# Step 5: Convert to interactive plot
+ggplotly(km_plot, tooltip = "text")
+```
+
+> The Kaplan-Meier survival curve estimates the probability of survival over time for different patient groups.
+Here, we compare survival probabilities based on MHC-II status.
+The risk table shows the number of patients remaining at risk at different time points.
+The p-value from the log-rank test suggests there is no statistically significant difference between groups.
+
+Column
+--------------------------------
+
+### Cox Proportional Hazards Model
+
+```{r cox_model}
+# Step 1: Fit Cox model
+cox_fit <- coxph(Surv(survival_days, survival_status) ~ 
+                   pack_years + mhcII_status + stage_at_diagnosis, data = data)
+
+# Step 2: Tidy the results for plotting
+tidy_cox <- tidy(cox_fit, exponentiate = TRUE, conf.int = TRUE) %>%
+  mutate(term = gsub("_", " ", term))  # Optional: clean variable names
+
+# Step 3: Build interactive forest plot
+forest_plot <- ggplot(tidy_cox, aes(x = estimate, y = reorder(term, estimate),
+                                    xmin = conf.low, xmax = conf.high,
+                                    text = paste0("Variable: ", term,
+                                                  "<br>HR: ", round(estimate, 2),
+                                                  "<br>95% CI: [", round(conf.low, 2), ", ", round(conf.high, 2), "]",
+                                                  "<br>p-value: ", signif(p.value, 3)))) +
+  geom_point(size = 3, color = "#2c7fb8") +
+  geom_errorbarh(height = 0.2, color = "#2c7fb8") +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "gray50") +
+  labs(title = "Cox Proportional Hazards Model",
+       x = "Hazard Ratio (HR)",
+       y = NULL) +
+  theme_minimal()
+
+# Step 4: Make it interactive
+ggplotly(forest_plot, tooltip = "text")
+
+```
+
+> The Cox proportional hazards model estimates the effect of various clinical and biological factors on survival risk. Each hazard ratio (HR) represents the relative risk of death associated with a given variable. Values greater than 1 indicate an increased risk, while values less than 1 suggest a protective effect. Confidence intervals help assess the reliability of each estimate.
+
+Clinical Dataset {.tabset}
+===========================================================
+
+Column
+--------------------------------
+
+### Interactive DataTable
+
+```{r data_table}
+datatable(data, filter = 'top', options = list(pageLength = 10))
+```
